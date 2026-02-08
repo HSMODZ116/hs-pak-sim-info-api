@@ -9,6 +9,34 @@ from bs4 import BeautifulSoup
 app = Flask(__name__)
 
 # -------------------------
+# CORS (No proxy needed for frontend)
+# -------------------------
+def _cors_headers():
+    origin = request.headers.get("Origin", "*")
+    # If you want to lock down to specific domains later, replace "*" with allowed origin(s).
+    return {
+        "Access-Control-Allow-Origin": origin if origin else "*",
+        "Vary": "Origin",
+        "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+        "Access-Control-Max-Age": "86400",
+    }
+
+@app.before_request
+def _handle_preflight():
+    # Handle browser preflight requests
+    if request.method == "OPTIONS":
+        return Response("", status=204, headers=_cors_headers())
+
+@app.after_request
+def _add_cors_headers(resp):
+    # Add CORS headers to every response
+    for k, v in _cors_headers().items():
+        resp.headers.setdefault(k, v)
+    return resp
+
+
+# -------------------------
 # Config
 # -------------------------
 TARGET_BASE = os.getenv("TARGET_BASE", "https://pakistandatabase.com")
@@ -138,7 +166,7 @@ def respond_json(obj, pretty=False):
 # -------------------------
 # Routes
 # -------------------------
-@app.route("/", methods=["GET"])
+@app.route("/", methods=["GET", "OPTIONS"]])
 def home():
     sample_get = url_for("api_lookup_get", _external=False) + "?query=03xxxxxx&pretty=1"
     return f"""
@@ -209,7 +237,7 @@ def home():
 </html>
 """
 
-@app.route("/api/lookup", methods=["GET"])
+@app.route("/api/lookup", methods=["GET", "OPTIONS"]])
 def api_lookup_get():
     q = request.args.get("query") or request.args.get("q") or request.args.get("value")
     pretty = request.args.get("pretty") in ("1", "true", "True")
@@ -225,7 +253,7 @@ def api_lookup_get():
     except Exception as e:
         return respond_json({"error": "Fetch failed", "detail": str(e), "developer": DEVELOPER}, pretty), 500
 
-@app.route("/api/lookup/<path:q>", methods=["GET"])
+@app.route("/api/lookup/<path:q>", methods=["GET", "OPTIONS"]])
 def api_lookup_path(q):
     pretty = request.args.get("pretty") in ("1", "true", "True")
     try:
@@ -236,7 +264,7 @@ def api_lookup_path(q):
     except Exception as e:
         return respond_json({"error": "Fetch failed", "detail": str(e), "developer": DEVELOPER}, pretty), 500
 
-@app.route("/api/lookup", methods=["POST"])
+@app.route("/api/lookup", methods=["POST", "OPTIONS"]])
 def api_lookup_post():
     pretty = request.args.get("pretty") in ("1", "true", "True")
     data = request.get_json(force=True, silent=True) or {}
@@ -253,7 +281,7 @@ def api_lookup_post():
     except Exception as e:
         return respond_json({"error": "Fetch failed", "detail": str(e), "developer": DEVELOPER}, pretty), 500
 
-@app.route("/health", methods=["GET"])
+@app.route("/health", methods=["GET", "OPTIONS"]])
 def health():
     return respond_json({"status": "ok", "developer": DEVELOPER})
 
