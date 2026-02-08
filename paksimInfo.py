@@ -3,7 +3,7 @@ import re
 import time
 import json
 import requests
-from flask import Flask, request, Response, make_response
+from flask import Flask, request, Response, url_for
 from bs4 import BeautifulSoup
 
 app = Flask(__name__)
@@ -19,19 +19,6 @@ LAST_CALL = {"ts": 0.0}
 
 # Developer
 DEVELOPER = "Haseeb Sahil"
-
-# -------------------------
-# CORS Headers
-# -------------------------
-def add_cors_headers(response):
-    response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-    return response
-
-@app.after_request
-def after_request(response):
-    return add_cors_headers(response)
 
 # -------------------------
 # Helpers
@@ -98,7 +85,7 @@ def fetch_upstream(query_value: str):
     return resp.text
 
 # -------------------------
-# FIXED: Parse table with improved logic
+# FIXED: Remove duplicate entries while keeping everything else same
 # -------------------------
 def parse_table(html: str):
     soup = BeautifulSoup(html, "html.parser")
@@ -108,57 +95,29 @@ def parse_table(html: str):
 
     tbody = table.find("tbody")
     if not tbody:
-        # If no tbody, try direct tr children
-        rows = table.find_all("tr")
-        if len(rows) <= 1:  # Only header row
-            return []
-        rows = rows[1:]  # Skip header
-    else:
-        rows = tbody.find_all("tr")
+        return []
 
     results = []
     seen = set()
 
-    for tr in rows:
+    for tr in tbody.find_all("tr"):
         cols = [td.get_text(strip=True) for td in tr.find_all("td")]
-        if len(cols) < 3:
-            continue
-            
-        mobile = cols[0] if len(cols) > 0 else "N/A"
-        name = cols[1] if len(cols) > 1 else "N/A"
-        cnic = cols[2] if len(cols) > 2 else "N/A"
-        address = cols[3] if len(cols) > 3 else "N/A"
+        mobile = cols[0] if len(cols) > 0 else None
+        name = cols[1] if len(cols) > 1 else None
+        cnic = cols[2] if len(cols) > 2 else None
+        address = cols[3] if len(cols) > 3 else None
 
-        # Clean up mobile number
-        if mobile == "N/A" or not mobile:
-            continue
-            
-        # Extract only digits from mobile
-        mobile_digits = re.sub(r'\D', '', mobile)
-        if not mobile_digits:
-            continue
-            
-        # Format mobile number
-        if mobile_digits.startswith('92'):
-            mobile_formatted = mobile_digits
-        elif mobile_digits.startswith('3') and len(mobile_digits) == 10:
-            mobile_formatted = '92' + mobile_digits
-        elif len(mobile_digits) == 11 and mobile_digits.startswith('03'):
-            mobile_formatted = '92' + mobile_digits[1:]
-        else:
-            mobile_formatted = mobile_digits
-
-        # Use a tuple key to remove duplicates (mobile+cnic)
-        key = (mobile_formatted, cnic)
+        # Use a tuple key to remove duplicates (mobile+cnic+name)
+        key = (mobile, cnic, name)
         if key in seen:
             continue
         seen.add(key)
 
         results.append({
-            "mobile": mobile_formatted,
-            "name": name if name and name != "N/A" else "N/A",
-            "cnic": cnic if cnic and cnic != "N/A" else "N/A",
-            "address": address if address and address != "N/A" else "N/A"
+            "mobile": mobile,
+            "name": name,
+            "cnic": cnic,
+            "address": address
         })
 
     return results
@@ -172,17 +131,17 @@ def make_response_object(query, qtype, results):
         "developer": DEVELOPER
     }
 
-def respond_json(obj, pretty=False, status=200):
+def respond_json(obj, pretty=False):
     text = json.dumps(obj, indent=2 if pretty else None, ensure_ascii=False)
-    response = Response(text, mimetype="application/json; charset=utf-8", status=status)
-    return add_cors_headers(response)
+    return Response(text, mimetype="application/json; charset=utf-8")
 
 # -------------------------
 # Routes
 # -------------------------
 @app.route("/", methods=["GET"])
 def home():
-    response = make_response(f"""
+    sample_get = url_for("api_lookup_get", _external=False) + "?query=03xxxxxx&pretty=1"
+    return f"""
 <!DOCTYPE html>
 <html>
 <head>
@@ -232,108 +191,71 @@ def home():
             <li>CNIC Lookup Supported</li>
             <li>JSON API Response</li>
             <li>High-Speed Live Fetch</li>
-            <li>CORS Enabled</li>
         </ul>
 
         <h3>🧪 Endpoints</h3>
         <ul>
             <li>
                 GET <code>/api/lookup?query=03XXXXXXXXX</code><br>
-                Example: <code>https://your-api.vercel.app/api/lookup?query=03001234567</code>
+                Example: <a href="{sample_get}">{sample_get}</a>
             </li>
             <li>
                 POST <code>/api/lookup</code><br>
                 JSON: <code>{{"query":"03xx"}}</code>
             </li>
         </ul>
-        
-        <h3>📡 Usage in JavaScript</h3>
-        <code>
-        fetch('https://your-api.vercel.app/api/lookup?query=03001234567')<br>
-          .then(res => res.json())<br>
-          .then(data => console.log(data))
-        </code>
     </div>
 </body>
 </html>
-""")
-    return add_cors_headers(response)
+"""
 
-@app.route("/api/lookup", methods=["GET", "OPTIONS"])
+@app.route("/api/lookup", methods=["GET"])
 def api_lookup_get():
-    if request.method == "OPTIONS":
-        return add_cors_headers(Response())
-        
     q = request.args.get("query") or request.args.get("q") or request.args.get("value")
     pretty = request.args.get("pretty") in ("1", "true", "True")
 
     if not q:
-        return respond_json({"error": "Use ?query=<mobile or cnic>", "developer": DEVELOPER}, pretty, 400)
+        return respond_json({"error": "Use ?query=<mobile or cnic>", "developer": DEVELOPER}, pretty), 400
 
     try:
         qtype, normalized = classify_query(q)
         html = fetch_upstream(normalized)
         results = parse_table(html)
         return respond_json(make_response_object(normalized, qtype, results), pretty)
-    except ValueError as e:
-        return respond_json({"error": str(e), "developer": DEVELOPER}, pretty, 400)
     except Exception as e:
-        return respond_json({"error": "Fetch failed", "detail": str(e), "developer": DEVELOPER}, pretty, 500)
+        return respond_json({"error": "Fetch failed", "detail": str(e), "developer": DEVELOPER}, pretty), 500
 
-@app.route("/api/lookup/<path:q>", methods=["GET", "OPTIONS"])
+@app.route("/api/lookup/<path:q>", methods=["GET"])
 def api_lookup_path(q):
-    if request.method == "OPTIONS":
-        return add_cors_headers(Response())
-        
     pretty = request.args.get("pretty") in ("1", "true", "True")
     try:
         qtype, normalized = classify_query(q)
         html = fetch_upstream(normalized)
         results = parse_table(html)
         return respond_json(make_response_object(normalized, qtype, results), pretty)
-    except ValueError as e:
-        return respond_json({"error": str(e), "developer": DEVELOPER}, pretty, 400)
     except Exception as e:
-        return respond_json({"error": "Fetch failed", "detail": str(e), "developer": DEVELOPER}, pretty, 500)
+        return respond_json({"error": "Fetch failed", "detail": str(e), "developer": DEVELOPER}, pretty), 500
 
-@app.route("/api/lookup", methods=["POST", "OPTIONS"])
+@app.route("/api/lookup", methods=["POST"])
 def api_lookup_post():
-    if request.method == "OPTIONS":
-        return add_cors_headers(Response())
-        
     pretty = request.args.get("pretty") in ("1", "true", "True")
     data = request.get_json(force=True, silent=True) or {}
     q = data.get("query") or data.get("number") or data.get("value")
 
     if not q:
-        return respond_json({"error": "Send JSON {\"query\":\"...\"}", "developer": DEVELOPER}, pretty, 400)
+        return respond_json({"error": "Send JSON {\"query\":\"...\"}", "developer": DEVELOPER}, pretty), 400
 
     try:
         qtype, normalized = classify_query(q)
         html = fetch_upstream(normalized)
         results = parse_table(html)
         return respond_json(make_response_object(normalized, qtype, results), pretty)
-    except ValueError as e:
-        return respond_json({"error": str(e), "developer": DEVELOPER}, pretty, 400)
     except Exception as e:
-        return respond_json({"error": "Fetch failed", "detail": str(e), "developer": DEVELOPER}, pretty, 500)
+        return respond_json({"error": "Fetch failed", "detail": str(e), "developer": DEVELOPER}, pretty), 500
 
-@app.route("/health", methods=["GET", "OPTIONS"])
+@app.route("/health", methods=["GET"])
 def health():
-    if request.method == "OPTIONS":
-        return add_cors_headers(Response())
     return respond_json({"status": "ok", "developer": DEVELOPER})
-
-# -------------------------
-# Error Handlers
-# -------------------------
-@app.errorhandler(404)
-def not_found(e):
-    return respond_json({"error": "Not Found", "developer": DEVELOPER}, status=404)
-
-@app.errorhandler(500)
-def server_error(e):
-    return respond_json({"error": "Internal Server Error", "developer": DEVELOPER}, status=500)
 
 # -------------------------
 # Run
